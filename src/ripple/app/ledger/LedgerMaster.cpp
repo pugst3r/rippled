@@ -817,7 +817,7 @@ public:
             fee = base;
         }
 
-        getApp().getFeeTrack().setRemoteFee(fee);
+        getApp().getFeeTrack().setRemoteLevel(fee);
 
         tryAdvance ();
     }

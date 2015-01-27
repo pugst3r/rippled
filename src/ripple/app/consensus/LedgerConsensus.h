@@ -91,13 +91,22 @@ public:
     virtual void simulate () = 0;
 };
 
+typedef std::vector <std::pair <uint256, STTx::pointer>> TxSet;
+
 std::shared_ptr <LedgerConsensus>
 make_LedgerConsensus (LedgerConsensus::clock_type& clock, LocalTxs& localtx,
     LedgerHash const & prevLCLHash, Ledger::ref previousLedger,
         std::uint32_t closeTime, FeeVote& feeVote);
 
+TxSet buildTxSet (SHAMap::ref set);
+
 void
 applyTransactions(SHAMap::ref set, Ledger::ref applyLedger,
+                  Ledger::ref checkLedger,
+                  CanonicalTXSet& retriableTransactions, bool openLgr);
+
+void
+applyTransactions(TxSet const& set, Ledger::ref applyLedger,
                   Ledger::ref checkLedger,
                   CanonicalTXSet& retriableTransactions, bool openLgr);
 

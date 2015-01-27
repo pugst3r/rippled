@@ -1052,7 +1052,9 @@ private:
             WriteLog (lsDEBUG, LedgerConsensus)
                 << "Applying consensus set transactions to the"
                 << " last closed ledger";
-            applyTransactions (set, newLCL, newLCL, retriableTransactions, false);
+
+            auto const txSet (buildTxSet (set));
+            applyTransactions (txSet, newLCL, newLCL, retriableTransactions, false);
             newLCL->updateSkipList ();
             newLCL->setClosed ();
 
@@ -1161,7 +1163,7 @@ private:
             }
             if (anyDisputes)
             {
-                applyTransactions (std::shared_ptr<SHAMap>(),
+                applyTransactions (TxSet(),
                     newOL, newLCL, retriableTransactions, true);
             }
 
@@ -1172,7 +1174,7 @@ private:
                 {
                     WriteLog (lsDEBUG, LedgerConsensus)
                         << "Applying transactions from current open ledger";
-                    applyTransactions (oldOL->peekTransactionMap (),
+                    applyTransactions (buildTxSet (oldOL->peekTransactionMap ()),
                         newOL, newLCL, retriableTransactions, true);
                 }
             }
@@ -1925,8 +1927,8 @@ private:
     void addLoad(STValidation::ref val)
     {
         std::uint32_t fee = std::max(
-            getApp().getFeeTrack().getLocalFee(),
-            getApp().getFeeTrack().getClusterFee());
+            getApp().getFeeTrack().getLocalLevel(),
+            getApp().getFeeTrack().getClusterLevel());
         std::uint32_t ref = getApp().getFeeTrack().getLoadBase();
         if (fee > ref)
             val->setFieldU32(sfLoadFee, fee);
@@ -2062,6 +2064,32 @@ int applyTransaction (TransactionEngine& engine
     }
 }
 
+
+// Build a transaction set from a transaction map
+// This allows us to serialize the transactions only once,
+TxSet buildTxSet (SHAMap::ref map)
+{
+    TxSet txSet;
+    txSet.reserve (64);
+
+    map->visitLeaves ([&] (SHAMapItem::ref item)
+    {
+        try
+        {
+            SerializerIterator sit (item->peekSerializer ());
+            txSet.emplace_back (item->getTag(),
+                std::make_shared <STTx> (sit));
+        }
+        catch (...)
+        {
+            WriteLog (lsWARNING, LedgerConsensus) << "Transaction " <<
+            item->getTag() << " throws";
+        }
+    });
+
+    return txSet;
+}
+
 /** Apply a set of transactions to a ledger
 
   @param set                   The set of transactions to apply
@@ -2072,40 +2100,36 @@ int applyTransaction (TransactionEngine& engine
   @param retriableTransactions collect failed transactions in this set
   @param openLgr               true if applyLedger is open, else false.
 */
-void applyTransactions (SHAMap::ref set, Ledger::ref applyLedger,
-    Ledger::ref checkLedger, CanonicalTXSet& retriableTransactions,
-    bool openLgr)
+void applyTransactions (
+    TxSet const& set,
+    Ledger::ref applyLedger,
+    Ledger::ref checkLedger,
+        CanonicalTXSet& retriableTransactions,
+        bool openLgr)
 {
     TransactionEngine engine (applyLedger);
 
-    if (set)
+    for (auto& tx : set)
     {
-        for (SHAMapItem::pointer item = set->peekFirstItem (); !!item;
-            item = set->peekNextItem (item->getTag ()))
+        // If the checkLedger doesn't have the transaction
+        if (!checkLedger->hasTransaction (tx.first))
         {
-            // If the checkLedger doesn't have the transaction
-            if (!checkLedger->hasTransaction (item->getTag ()))
+            // Then try to apply the transaction to applyLedger
+            WriteLog (lsINFO, LedgerConsensus) <<
+                "Processing candidate transaction: " << tx.first;
+            try
             {
-                // Then try to apply the transaction to applyLedger
-                WriteLog (lsINFO, LedgerConsensus) <<
-                    "Processing candidate transaction: " << item->getTag ();
-                try
+                if (applyTransaction (engine, tx.second,
+                          openLgr, true) == LedgerConsensusImp::resultRetry)
                 {
-                    SerializerIterator sit (item->peekSerializer ());
-                    STTx::pointer txn
-                        = std::make_shared<STTx>(sit);
-                    if (applyTransaction (engine, txn,
-                              openLgr, true) == LedgerConsensusImp::resultRetry)
-                    {
-                        // On failure, stash the failed transaction for
-                        // later retry.
-                        retriableTransactions.push_back (txn);
-                    }
+                    // On failure, stash the failed transaction for
+                    // later retry.
+                    retriableTransactions.push_back (tx.second);
                 }
-                catch (...)
-                {
-                    WriteLog (lsWARNING, LedgerConsensus) << "  Throws";
-                }
+            }
+            catch (...)
+            {
+                WriteLog (lsWARNING, LedgerConsensus) << "  Throws";
             }
         }
     }
@@ -2165,6 +2189,14 @@ void applyTransactions (SHAMap::ref set, Ledger::ref applyLedger,
     // If there are any transactions left, we must have
     // tried them in at least one final pass
     assert (retriableTransactions.empty() || !certainRetry);
+}
+
+void applyTransactions (SHAMap::ref set, Ledger::ref applyLedger,
+    Ledger::ref checkLedger, CanonicalTXSet& retriableTransactions,
+    bool openLgr)
+{
+    applyTransactions (buildTxSet (set), applyLedger, checkLedger,
+        retriableTransactions, openLgr);
 }
 
 } // ripple

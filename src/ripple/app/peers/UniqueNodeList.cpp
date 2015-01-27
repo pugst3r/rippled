@@ -395,7 +395,7 @@ public:
 
     //--------------------------------------------------------------------------
 
-    std::uint32_t getClusterFee ()
+    std::uint32_t getClusterLevel ()
     {
         int thresh = getApp().getOPs().getNetworkTimeNC() - 90;
 
