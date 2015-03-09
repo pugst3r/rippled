@@ -53,13 +53,8 @@ public:
 
     virtual uint256 getLCL () = 0;
 
-    virtual std::shared_ptr<SHAMap> getTransactionTree (uint256 const& hash,
-        bool doAcquire) = 0;
-
     virtual void mapComplete (uint256 const& hash,
         std::shared_ptr<SHAMap> const& map, bool acquired) = 0;
-
-    virtual bool stillNeedTXSet (uint256 const& hash) = 0;
 
     virtual void checkLCL () = 0;
 
@@ -76,11 +71,6 @@ public:
     virtual bool haveConsensus (bool forReal) = 0;
 
     virtual bool peerPosition (LedgerProposal::ref) = 0;
-
-    virtual SHAMapAddNode peerGaveNodes (Peer::ptr const& peer,
-        uint256 const& setHash,
-        const std::list<SHAMapNodeID>& nodeIDs,
-        const std::list< Blob >& nodeData) = 0;
 
     virtual bool isOurPubKey (const RippleAddress & k) = 0;
 

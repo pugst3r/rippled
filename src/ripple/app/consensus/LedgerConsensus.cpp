@@ -32,6 +32,7 @@
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/Validations.h>
 #include <ripple/app/tx/TransactionAcquire.h>
+#include <ripple/app/tx/InboundTransactions.h>
 #include <ripple/basics/CountedObject.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Config.h>
@@ -110,6 +111,8 @@ public:
         mPreviousProposers = getApp().getOPs ().getPreviousProposers ();
         mPreviousMSeconds = getApp().getOPs ().getPreviousConvergeTime ();
         assert (mPreviousMSeconds);
+
+        getApp().getInboundTransactions().newRound (mPreviousLedger->getLedgerSeq());
 
         // Adapt close time resolution to recent network conditions
         mCloseResolution = ContinuousLedgerTiming::getNextLedgerTimeResolution (
@@ -255,16 +258,6 @@ public:
                 ret["acquired"] = acq;
             }
 
-            if (!mAcquiring.empty ())
-            {
-                Json::Value acq (Json::arrayValue);
-                for (auto& at : mAcquiring)
-                {
-                    acq.append (to_string (at.first));
-                }
-                ret["acquiring"] = acq;
-            }
-
             if (!mDisputes.empty ())
             {
                 Json::Value dsj (Json::objectValue);
@@ -310,64 +303,6 @@ public:
     }
 
     /**
-      Get a transaction tree, fetching it from the network if required and
-      requested.  When the transaction acquire engine successfully acquires
-      a transaction set, it will call back.
-
-      @param hash      hash of the requested transaction tree.
-      @param doAcquire true if we should get this from the network if we don't
-                       already have it.
-      @return          Pointer to the transaction tree if we got it, else
-                       nullptr.
-    */
-    std::shared_ptr<SHAMap>
-    getTransactionTree (uint256 const& hash, bool doAcquire)
-    {
-        auto it = mAcquired.find (hash);
-
-        if (it != mAcquired.end ())
-            return it->second;
-
-        if (mState == lcsPRE_CLOSE)
-        {
-            std::shared_ptr<SHAMap> currentMap
-                = getApp().getLedgerMaster ().getCurrentLedger ()
-                    ->peekTransactionMap ();
-
-            if (currentMap->getHash () == hash)
-            {
-                WriteLog (lsDEBUG, LedgerConsensus)
-                    << "Map " << hash << " is our current";
-                currentMap = currentMap->snapShot (false);
-                mapCompleteInternal (hash, currentMap, false);
-                return currentMap;
-            }
-        }
-
-        if (doAcquire)
-        {
-            TransactionAcquire::pointer& acquiring = mAcquiring[hash];
-
-            if (!acquiring)
-            {
-                if (hash.isZero ())
-                {
-                    auto empty = std::make_shared<SHAMap> (
-                        SHAMapType::TRANSACTION, getApp().family(),
-                            deprecatedLogs().journal("SHAMap"));
-                    mapCompleteInternal (hash, empty, false);
-                    return empty;
-                }
-
-                acquiring = std::make_shared<TransactionAcquire> (hash, m_clock);
-                startAcquiring (acquiring);
-            }
-        }
-
-        return std::shared_ptr<SHAMap> ();
-    }
-
-    /**
       We have a complete transaction set, typically acquired from the network
 
       @param hash     hash of the transaction set.
@@ -400,7 +335,6 @@ public:
         {
             // this is an invalid/corrupt map
             mAcquired[hash] = map;
-            mAcquiring.erase (hash);
             WriteLog (lsWARNING, LedgerConsensus)
                 << "A trusted node directed us to acquire an invalid TXN map";
             return;
@@ -415,7 +349,6 @@ public:
         {
             if (it->second)
             {
-                mAcquiring.erase (hash);
                 return; // we already have this map
             }
 
@@ -424,6 +357,15 @@ public:
         }
 
         // We now have a map that we did not have before
+
+        if (!acquired)
+        {
+            // Put the map where others can get it
+            getApp().getInboundTransactions().giveSet (hash, map, false);
+        }
+
+        // Inform directly-connected peers that we have this transaction set
+        sendHaveTxSet (hash, true);
 
         if (mOurPosition && (!mOurPosition->isBowOut ())
             && (hash != mOurPosition->getCurrentHash ()))
@@ -447,7 +389,6 @@ public:
                 << "Not ready to create disputes";
 
         mAcquired[hash] = map;
-        mAcquiring.erase (hash);
 
         // Adjust tracking for each peer that takes this position
         std::vector<NodeID> peers;
@@ -468,30 +409,6 @@ public:
                 << hash << " no peers were proposing it";
         }
 
-        // Inform directly-connected peers that we have this transaction set
-        sendHaveTxSet (hash, true);
-    }
-
-    /**
-      Determine if we still need to acquire a transaction set from the network.
-      If a transaction set is popular, we probably have it. If it's unpopular,
-      we probably don't need it (and the peer that initially made us
-      retrieve it has probably already changed its position).
-
-      @param hash hash of the transaction set.
-      @return     true if we need to acquire it, else false.
-    */
-    bool stillNeedTXSet (uint256 const& hash)
-    {
-        if (mAcquired.find (hash) != mAcquired.end ())
-            return false;
-
-        for (auto const& it : mPeerPositions)
-        {
-            if (it.second->getCurrentHash () == hash)
-                return true;
-        }
-        return false;
     }
 
     /**
@@ -851,6 +768,20 @@ public:
             , mPreviousMSeconds, mCurrentMSeconds, forReal, mConsensusFail);
     }
 
+    std::shared_ptr<SHAMap> getTransactionTree (uint256 const& hash)
+    {
+        auto it = mAcquired.find (hash);
+        if (it != mAcquired.end() && it->second)
+            return it->second;
+
+        auto set = getApp().getInboundTransactions().getSet (hash, true);
+
+        if (set)
+            mAcquired[hash] = set;
+
+        return set;
+    }
+
     /**
       A server has taken a new position, adjust our tracking
       Called when a peer takes a new postion.
@@ -909,7 +840,7 @@ public:
         currentPosition = newPosition;
 
         std::shared_ptr<SHAMap> set
-            = getTransactionTree (newPosition->getCurrentHash (), true);
+            = getTransactionTree (newPosition->getCurrentHash ());
 
         if (set)
         {
@@ -923,32 +854,6 @@ public:
         }
 
         return true;
-    }
-
-    /**
-      A peer has sent us some nodes from a transaction set
-
-      @param peer     The peer which has sent the nodes
-      @param setHash  The transaction set
-      @param nodeIDs  The nodes in the transaction set
-      @param nodeData The data
-      @return         The status results of adding the nodes.
-    */
-    SHAMapAddNode peerGaveNodes (Peer::ptr const& peer
-        , uint256 const& setHash, const std::list<SHAMapNodeID>& nodeIDs
-        , const std::list< Blob >& nodeData)
-    {
-        auto acq (mAcquiring.find (setHash));
-
-        if (acq == mAcquiring.end ())
-        {
-            WriteLog (lsDEBUG, LedgerConsensus)
-                << "Got TX data for set no longer acquiring: " << setHash;
-            return SHAMapAddNode ();
-        }
-        // We must keep the set around during the function
-        TransactionAcquire::pointer set = acq->second;
-        return set->takeNodes (nodeIDs, nodeData, peer);
     }
 
     bool isOurPubKey (const RippleAddress & k)
@@ -1196,36 +1101,6 @@ private:
                 << offset << " (" << closeCount << ")";
             getApp().getOPs ().closeTimeOffset (offset);
         }
-    }
-
-    /**
-      Begin acquiring a transaction set
-
-      @param acquire The transaction set to acquire.
-    */
-    void startAcquiring (TransactionAcquire::pointer acquire)
-    {
-        // FIXME: Randomize and limit the number
-        struct build_acquire_list
-        {
-            typedef void return_type;
-
-            TransactionAcquire::pointer const& acquire;
-
-            build_acquire_list (TransactionAcquire::pointer const& acq)
-                : acquire(acq)
-            { }
-
-            return_type operator() (Peer::ptr const& peer) const
-            {
-                if (peer->hasTxSet (acquire->getHash ()))
-                    acquire->peerHas (peer);
-            }
-        };
-
-        getApp().overlay ().foreach (build_acquire_list (acquire));
-
-        acquire->setTimer ();
     }
 
     /**
@@ -1919,7 +1794,6 @@ private:
 
     // Transaction Sets, indexed by hash of transaction tree
     hash_map<uint256, std::shared_ptr<SHAMap>> mAcquired;
-    hash_map<uint256, TransactionAcquire::pointer> mAcquiring;
 
     // Disputed transactions
     hash_map<uint256, DisputedTx::pointer> mDisputes;

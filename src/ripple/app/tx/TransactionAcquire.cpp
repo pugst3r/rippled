@@ -23,6 +23,7 @@
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/tx/TransactionAcquire.h>
+#include <ripple/app/tx/InboundTransactions.h>
 #include <ripple/overlay/Overlay.h>
 #include <memory>
 
@@ -30,9 +31,11 @@ namespace ripple {
 
 enum
 {
-    // VFALCO NOTE This should be a std::chrono::duration constant.
-    // TODO Document this. Is it seconds? Milliseconds? WTF?
-    TX_ACQUIRE_TIMEOUT = 250
+    // Timeout interval in milliseconds
+    TX_ACQUIRE_TIMEOUT = 250,
+
+    NORM_TIMEOUTS = 4,
+    MAX_TIMEOUTS = 20,
 };
 
 TransactionAcquire::TransactionAcquire (uint256 const& hash, clock_type& clock)
@@ -51,19 +54,12 @@ TransactionAcquire::~TransactionAcquire ()
 
 static void TACompletionHandler (uint256 hash, std::shared_ptr<SHAMap> map)
 {
-    {
-        Application::ScopedLockType lock (getApp ().getMasterLock ());
-
-        getApp().getOPs ().mapComplete (hash, map);
-
-        getApp().getInboundLedgers ().dropLedger (hash);
-    }
+    getApp().getInboundTransactions().giveSet (hash, map, true);
 }
 
 void TransactionAcquire::done ()
 {
-    // We hold a PeerSet lock and so cannot acquire the master lock here
-    std::shared_ptr<SHAMap> map;
+    // We hold a PeerSet lock and so cannot do real work here
 
     if (mFailed)
     {
@@ -73,33 +69,21 @@ void TransactionAcquire::done ()
     {
         WriteLog (lsDEBUG, TransactionAcquire) << "Acquired TX set " << mHash;
         mMap->setImmutable ();
-        map = mMap;
+        getApp().getJobQueue().addJob (jtTXN_DATA,
+            "completeAcquire", std::bind (&TACompletionHandler, mHash, mMap));
     }
 
-    getApp().getJobQueue().addJob (jtTXN_DATA, "completeAcquire", std::bind (&TACompletionHandler, mHash, map));
 }
 
 void TransactionAcquire::onTimer (bool progress, ScopedLockType& psl)
 {
     bool aggressive = false;
 
-    if (getTimeouts () > 10)
+    if (getTimeouts () >= NORM_TIMEOUTS)
     {
-        WriteLog (lsWARNING, TransactionAcquire) << "Ten timeouts on TX set " << getHash ();
-        psl.unlock();
-        {
-            auto lock = getApp().masterLock();
+        aggressive = true;
 
-            if (getApp().getOPs ().stillNeedTXSet (mHash))
-            {
-                WriteLog (lsWARNING, TransactionAcquire) << "Still need it";
-                mTimeouts = 0;
-                aggressive = true;
-            }
-        }
-        psl.lock();
-
-        if (!aggressive)
+        if (getTimeouts () > MAX_TIMEOUTS)
         {
             mFailed = true;
             done ();
@@ -107,30 +91,10 @@ void TransactionAcquire::onTimer (bool progress, ScopedLockType& psl)
         }
     }
 
-    if (aggressive || !getPeerCount ())
-    {
-        // out of peers
-        WriteLog (lsWARNING, TransactionAcquire) << "Out of peers for TX set " << getHash ();
-
-        bool found = false;
-        Overlay::PeerSequence peerList = getApp().overlay ().getActivePeers ();
-        for (auto const& peer : peerList)
-        {
-            if (peer->hasTxSet (getHash ()))
-            {
-                found = true;
-                peerHas (peer);
-            }
-        }
-
-        if (!found)
-        {
-            for (auto const& peer : peerList)
-                peerHas (peer);
-        }
-    }
-    else if (!progress)
+    if (aggressive)
         trigger (Peer::ptr ());
+
+    addPeers (1);
 }
 
 std::weak_ptr<PeerSet> TransactionAcquire::pmDowncast ()
@@ -206,6 +170,8 @@ void TransactionAcquire::trigger (Peer::ptr const& peer)
 SHAMapAddNode TransactionAcquire::takeNodes (const std::list<SHAMapNodeID>& nodeIDs,
         const std::list< Blob >& data, Peer::ptr const& peer)
 {
+    ScopedLockType sl (mLock);
+
     if (mComplete)
     {
         WriteLog (lsTRACE, TransactionAcquire) << "TX set complete";
@@ -259,6 +225,71 @@ SHAMapAddNode TransactionAcquire::takeNodes (const std::list<SHAMapNodeID>& node
         WriteLog (lsERROR, TransactionAcquire) << "Peer sends us junky transaction node data";
         return SHAMapAddNode::invalid ();
     }
+}
+
+void TransactionAcquire::addPeers (int numPeers)
+{
+    std::vector <Peer::ptr> peerVec1, peerVec2;
+
+    {
+        auto peers = getApp().overlay().getActivePeers();
+        for (auto const& peer : peers)
+        {
+            if (peer->hasTxSet (mHash))
+                peerVec1.push_back (peer);
+            else
+                peerVec2.push_back (peer);
+        }
+    }
+
+    WriteLog (lsDEBUG, TransactionAcquire) << peerVec1.size() << " peers known to have " << mHash;
+
+    if (peerVec1.size() != 0)
+    {
+        // First try peers known to have the set
+        std::random_shuffle (peerVec1.begin (), peerVec1.end ());
+
+        for (auto const& peer : peerVec1)
+        {
+            if (peerHas (peer))
+            {
+                if (--numPeers <= 0)
+                    break;
+            }
+        }
+    }
+
+    if ((numPeers > 0) && (peerVec2.size() != 0))
+    {
+        // Then try peers not known to have the set
+        std::random_shuffle (peerVec2.begin (), peerVec2.end ());
+
+        for (auto const& peer : peerVec2)
+        {
+            if (peerHas (peer))
+            {
+                if (--numPeers <= 0)
+                    break;
+            }
+        }
+    }
+}
+
+void TransactionAcquire::init (int numPeers)
+{
+    ScopedLockType sl (mLock);
+
+    addPeers (numPeers);
+
+    setTimer ();
+}
+
+void TransactionAcquire::stillNeed ()
+{
+    ScopedLockType sl (mLock);
+
+    if (mTimeouts > NORM_TIMEOUTS)
+        mTimeouts = NORM_TIMEOUTS;
 }
 
 } // ripple
