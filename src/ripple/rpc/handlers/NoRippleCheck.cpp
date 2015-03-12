@@ -112,7 +112,7 @@ Json::Value doNoRippleCheck (RPC::Context& context)
 
     Json::Value& problems = (result["problems"] = Json::arrayValue);
 
-    bool bDefaultRipple = accountState->peekSLE().getFieldU32 (sfFlags) & asfDefaultRipple;
+    bool bDefaultRipple = accountState->peekSLE().getFieldU32 (sfFlags) & lsfDefaultRipple;
 
     if (bDefaultRipple & ! roleGateway)
     {
