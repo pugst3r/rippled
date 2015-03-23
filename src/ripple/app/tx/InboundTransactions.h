@@ -22,8 +22,11 @@
 
 //#include <ripple/app/ledger/InboundLedger.h>
 //#include <ripple/protocol/RippleLedgerHash.h>
-#include <beast/threads/Stoppable.h>
+#include <ripple/overlay/Peer.h>
+#include <ripple/shamap/SHAMap.h>
+#include <beast/chrono/abstract_clock.h>
 #include <beast/cxx14/memory.h> // <memory>
+#include <beast/threads/Stoppable.h>
 
 namespace ripple {
 
