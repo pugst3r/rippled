@@ -52,11 +52,6 @@ TransactionAcquire::~TransactionAcquire ()
 {
 }
 
-static void TACompletionHandler (uint256 hash, std::shared_ptr<SHAMap> map)
-{
-    getApp().getInboundTransactions().giveSet (hash, map, true);
-}
-
 void TransactionAcquire::done ()
 {
     // We hold a PeerSet lock and so cannot do real work here
@@ -69,8 +64,15 @@ void TransactionAcquire::done ()
     {
         WriteLog (lsDEBUG, TransactionAcquire) << "Acquired TX set " << mHash;
         mMap->setImmutable ();
-        getApp().getJobQueue().addJob (jtTXN_DATA,
-            "completeAcquire", std::bind (&TACompletionHandler, mHash, mMap));
+
+        uint256 const& hash (mHash);
+        std::shared_ptr <SHAMap> const& map (mMap);
+        getApp().getJobQueue().addJob (jtTXN_DATA, "completeAcquire",
+            [hash, map](Job&)
+            {
+                getApp().getInboundTransactions().giveSet (
+                    hash, map, true);
+            });
     }
 
 }
@@ -254,12 +256,12 @@ void TransactionAcquire::addPeers (int numPeers)
             if (peerHas (peer))
             {
                 if (--numPeers <= 0)
-                    break;
+                    return;
             }
         }
     }
 
-    if ((numPeers > 0) && (peerVec2.size() != 0))
+    if (peerVec2.size() != 0)
     {
         // Then try peers not known to have the set
         std::random_shuffle (peerVec2.begin (), peerVec2.end ());
@@ -269,7 +271,7 @@ void TransactionAcquire::addPeers (int numPeers)
             if (peerHas (peer))
             {
                 if (--numPeers <= 0)
-                    break;
+                    return;
             }
         }
     }

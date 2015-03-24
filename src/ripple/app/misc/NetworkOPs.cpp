@@ -1543,7 +1543,7 @@ int NetworkOPsImp::beginConsensus (
     assert (!mConsensus);
     prevLedger->setImmutable ();
 
-    mConsensus = make_LedgerConsensus (m_clock, *m_localTX, networkClosed,
+    mConsensus = make_LedgerConsensus (*m_localTX, networkClosed,
         prevLedger, m_ledgerMaster.getCurrentLedger ()->getCloseTimeNC (),
             *m_feeVote);
 

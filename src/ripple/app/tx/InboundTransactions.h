@@ -20,8 +20,6 @@
 #ifndef RIPPLE_INBOUNDTRANSACTIONS_H
 #define RIPPLE_INBOUNDTRANSACTIONS_H
 
-//#include <ripple/app/ledger/InboundLedger.h>
-//#include <ripple/protocol/RippleLedgerHash.h>
 #include <ripple/overlay/Peer.h>
 #include <ripple/shamap/SHAMap.h>
 #include <beast/chrono/abstract_clock.h>
@@ -37,6 +35,10 @@ class InboundTransactions
 {
 public:
     typedef beast::abstract_clock <std::chrono::steady_clock> clock_type;
+
+    InboundTransactions() = default;
+    InboundTransactions(InboundTransactions const&) = delete;
+    InboundTransactions& operator=(InboundTransactions const&) = delete;
 
     virtual ~InboundTransactions() = 0;
 

@@ -28,7 +28,6 @@
 #include <ripple/json/json_value.h>
 #include <ripple/overlay/Peer.h>
 #include <ripple/protocol/RippleLedgerHash.h>
-#include <beast/chrono/abstract_clock.h>
 #include <chrono>
 
 namespace ripple {
@@ -41,8 +40,6 @@ namespace ripple {
 class LedgerConsensus
 {
 public:
-    typedef beast::abstract_clock <std::chrono::steady_clock> clock_type;
-
     virtual ~LedgerConsensus() = 0;
 
     virtual int startup () = 0;
@@ -79,7 +76,7 @@ public:
 };
 
 std::shared_ptr <LedgerConsensus>
-make_LedgerConsensus (LedgerConsensus::clock_type& clock, LocalTxs& localtx,
+make_LedgerConsensus (LocalTxs& localtx,
     LedgerHash const & prevLCLHash, Ledger::ref previousLedger,
         std::uint32_t closeTime, FeeVote& feeVote);
 

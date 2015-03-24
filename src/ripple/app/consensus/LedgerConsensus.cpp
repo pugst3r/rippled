@@ -78,7 +78,6 @@ public:
     /**
       The result of applying a transaction to a ledger.
 
-      @param clock          The clock which will be used to measure time.
       @param localtx        A set of local transactions to apply.
       @param prevLCLHash    The hash of the Last Closed Ledger (LCL).
       @param previousLedger Best guess of what the Last Closed Ledger (LCL)
@@ -86,11 +85,10 @@ public:
       @param closeTime      Closing time point of the LCL.
       @param feeVote        Our desired fee levels and voting logic.
     */
-    LedgerConsensusImp (clock_type& clock, LocalTxs& localtx,
+    LedgerConsensusImp (LocalTxs& localtx,
         LedgerHash const & prevLCLHash, Ledger::ref previousLedger,
             std::uint32_t closeTime, FeeVote& feeVote)
-        : m_clock (clock)
-        , m_localTX (localtx)
+        : m_localTX (localtx)
         , m_feeVote (feeVote)
         , mState (lcsPRE_CLOSE)
         , mCloseTime (closeTime)
@@ -1759,7 +1757,6 @@ private:
             val->setFieldU32(sfLoadFee, fee);
     }
 private:
-    clock_type& m_clock;
     LocalTxs& m_localTX;
     FeeVote& m_feeVote;
 
@@ -1813,11 +1810,11 @@ LedgerConsensus::~LedgerConsensus ()
 }
 
 std::shared_ptr <LedgerConsensus>
-make_LedgerConsensus (LedgerConsensus::clock_type& clock, LocalTxs& localtx,
+make_LedgerConsensus (LocalTxs& localtx,
     LedgerHash const &prevLCLHash, Ledger::ref previousLedger,
         std::uint32_t closeTime, FeeVote& feeVote)
 {
-    return std::make_shared <LedgerConsensusImp> (clock, localtx,
+    return std::make_shared <LedgerConsensusImp> (localtx,
         prevLCLHash, previousLedger, closeTime, feeVote);
 }
 

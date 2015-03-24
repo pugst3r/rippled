@@ -74,13 +74,12 @@ public:
         : Stoppable ("InboundTransactions", parent)
         , m_clock (clock)
         , m_seq (0)
-        , m_gotSet (gotSet)
+        , m_gotSet (std::move (gotSet))
     {
     }
 
     TransactionAcquire::pointer getAcquire (uint256 const& hash)
     {
-        TransactionAcquire::pointer ret;
         {
             ScopedLockType sl (mLock);
 
@@ -89,10 +88,12 @@ public:
             if (it != m_map.end ())
                 return it->second.mAcquire;
         }
-        return ret;
+        return {};
     }
 
-    std::shared_ptr <SHAMap> getSet (uint256 const& hash, bool acquire)
+    std::shared_ptr <SHAMap> getSet (
+       uint256 const& hash,
+       bool acquire) override
     {
         assert (hash.isNonZero ());
 
@@ -116,7 +117,7 @@ public:
                 return it->second.mSet;
             }
 
-            if (isStopping () || !acquire)
+            if (!acquire || isStopping ())
                 return std::shared_ptr <SHAMap> ();
 
             ta = std::make_shared <TransactionAcquire> (hash, m_clock);
@@ -129,7 +130,7 @@ public:
 
         ta->init (startPeers);
 
-        return std::shared_ptr <SHAMap> ();
+        return {};
     }
 
     /** We received a TMLedgerData from a peer.
@@ -140,11 +141,13 @@ public:
     {
         protocol::TMLedgerData& packet = *packet_ptr;
 
-        WriteLog (lsTRACE, InboundLedger) << "Got data (" << packet.nodes ().size () << ") for acquiring ledger: " << hash;
+        WriteLog (lsTRACE, InboundLedger) <<
+            "Got data (" << packet.nodes ().size () << ") "
+            "for acquiring ledger: " << hash;
 
         TransactionAcquire::pointer ta = getAcquire (hash);
 
-        if (! ta)
+        if (ta == nullptr)
         {
             peer->charge (Resource::feeUnwantedData);
             return;
@@ -152,10 +155,8 @@ public:
 
         std::list<SHAMapNodeID> nodeIDs;
         std::list< Blob > nodeData;
-        for (int i = 0; i < packet.nodes ().size (); ++i)
+        for (auto const &node : packet.nodes())
         {
-            const protocol::TMLedgerNode& node = packet.nodes (i);
-
             if (!node.has_nodeid () || !node.has_nodedata () || (
                 node.nodeid ().size () != 33))
             {
@@ -163,10 +164,10 @@ public:
                 return;
             }
 
-            nodeIDs.push_back (SHAMapNodeID {node.nodeid ().data (),
-                               static_cast<int>(node.nodeid ().size ())});
-            nodeData.push_back (Blob (node.nodedata ().begin (),
-                node.nodedata ().end ()));
+            nodeIDs.emplace_back (node.nodeid ().data (),
+                               static_cast<int>(node.nodeid ().size ()));
+            nodeData.emplace_back (node.nodedata ().begin (),
+                node.nodedata ().end ());
         }
 
         if (! ta->takeNodes (nodeIDs, nodeData, peer).isUseful ())
@@ -175,7 +176,7 @@ public:
 
     void giveSet (uint256 const& hash,
         std::shared_ptr <SHAMap> const& set,
-        bool fromAcquire)
+        bool fromAcquire) override
     {
         bool isNew = true;
  
@@ -200,7 +201,7 @@ public:
             m_gotSet (hash, set);
     }
 
-    Json::Value getInfo()
+    Json::Value getInfo() override
     {
         Json::Value ret (Json::objectValue);
 
@@ -228,7 +229,7 @@ public:
         return ret;
     }
 
-    void newRound (std::uint32_t seq)
+    void newRound (std::uint32_t seq) override
     {
         ScopedLockType lock (mLock);
 
@@ -253,7 +254,7 @@ public:
         }
     }
 
-    void onStop ()
+    void onStop () override
     {
         ScopedLockType lock (mLock);
 
@@ -279,9 +280,7 @@ private:
 
 //------------------------------------------------------------------------------
 
-InboundTransactions::~InboundTransactions()
-{
-}
+InboundTransactions::~InboundTransactions() = default;
 
 std::unique_ptr <InboundTransactions>
 make_InboundTransactions (
@@ -292,7 +291,7 @@ make_InboundTransactions (
         std::shared_ptr <SHAMap> const&)> gotSet)
 {
     return std::make_unique <InboundTransactionsImp>
-        (clock, parent, collector, gotSet);
+        (clock, parent, collector, std::move (gotSet));
 }
 
 } // ripple
