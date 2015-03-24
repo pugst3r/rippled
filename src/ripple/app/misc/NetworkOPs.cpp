@@ -1675,6 +1675,8 @@ void
 NetworkOPsImp::mapComplete (uint256 const& hash,
                             std::shared_ptr<SHAMap> const& map)
 {
+    auto lock = getApp().masterLock();
+
     if (haveConsensusObject ())
         mConsensus->mapComplete (hash, map, true);
 }
